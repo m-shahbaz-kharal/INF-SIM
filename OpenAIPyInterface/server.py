@@ -87,15 +87,24 @@ assistant = client.beta.assistants.create(
     model="gpt-3.5-turbo-1106"
 )
 
+gather_thoughts_assistant = client.beta.assistants.create(
+    name="Thoughts Gatherer",
+    instructions="You'll be given inner thoughts of any entity; the thoughts may be redundant or give no extra information, your job is to gather the thoughts and make a single thought out of them.",
+    tools=[],
+    model="gpt-3.5-turbo-1106"
+)
+
 server_socket = socket.socket()
+gather_thoughts_socket = socket.socket()
 server_socket.bind(('127.0.0.1', 9438))
+gather_thoughts_socket.bind(('127.0.0.1', 9439))
 server_socket.listen(4)
+gather_thoughts_socket.listen(4)
 
 def client_thread_function(client_socket, client_id):
     while True:
         data = receive_data(client_socket)
         log(client_id, f'Received: {data}')
-        if data == 'CHECK': continue
         thread = client.beta.threads.create()
         message = client.beta.threads.messages.create(
             thread_id=thread.id,
@@ -165,11 +174,60 @@ def client_thread_function(client_socket, client_id):
         client.beta.threads.delete(thread.id)
         log(client_id, '-' * 50)
 
+def client_gather_thoughts_thread_function(client_gather_thoughts_socket, client_id):
+    while True:
+        data = receive_data(client_gather_thoughts_socket)
+        log(client_id, f'Gather Thoughts Request Received: {data}')
+        thread = client.beta.threads.create()
+        message = client.beta.threads.messages.create(
+            thread_id=thread.id,
+            role="user",
+            content=data
+        )
+        run = client.beta.threads.runs.create(
+            thread_id=thread.id,
+            assistant_id=gather_thoughts_assistant.id
+        )
+        while run.status != "completed":
+            log(client_id, f'Run status: {run.status}')
+            run = client.beta.threads.runs.retrieve(
+                thread_id=thread.id,
+                run_id=run.id,
+            )
+            time.sleep(SLEEP_TIME)
+            if run.status in ["queued", "in_progress", "cancelling"]: pass
+            elif run.status in ["failed", "cancelled", "expired"]:
+                client.beta.threads.delete(thread.id)
+                thread = client.beta.threads.create()
+                message = client.beta.threads.messages.create(
+                    thread_id=thread.id,
+                    role="user",
+                    content=data
+                )
+                run = client.beta.threads.runs.create(
+                    thread_id=thread.id,
+                    assistant_id=gather_thoughts_assistant.id
+                )
+        log(client_id, f'Run status: {run.status}')
+        run = client.beta.threads.runs.retrieve(
+            thread_id=thread.id,
+            run_id=run.id,
+        )
+        messages = client.beta.threads.messages.list(thread_id=thread.id)
+        for message in messages:
+            log(client_id, f'Gather Thoughts Response: {message.content[0].text.value}')
+            send_data(client_gather_thoughts_socket, message.content[0].text.value)
+            break
+        client.beta.threads.delete(thread.id)
+            
+
 
 client_id = 0
 while True:
     log('Server', 'Waiting for connection...')
     client_socket, client_address = server_socket.accept()
+    client_gather_thoughts_socket, client_gather_thoughts_address = gather_thoughts_socket.accept()
     log('Server', f'Got connection from {client_address}')
     threading.Thread(target=client_thread_function, args=(client_socket,client_id)).start()
+    threading.Thread(target=client_gather_thoughts_thread_function, args=(client_gather_thoughts_socket,client_id)).start()
     client_id += 1

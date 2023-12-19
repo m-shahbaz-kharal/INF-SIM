@@ -17,7 +17,7 @@ public class Entity : MonoBehaviour
     public float age;
     public float approximateLifeExpectancy, exactLifeExpectancy;
     public bool conscious, movable;
-    public float thoughtFrequency;
+    public int gatherThoughtsEveryNThoughts = 5;
 
     private Dictionary<int, Entity> interactionQueue = new Dictionary<int, Entity>();
 
@@ -28,9 +28,9 @@ public class Entity : MonoBehaviour
     private IEnumerator UpdateUI(string text)
     {
         try {StopCoroutine("UpdateUI");} catch (Exception) {}
-        textUI.text = title + ":" + text;
-        yield return new WaitForSeconds(5.0f);
-        textUI.text = "";
+        if (text.Length > 200) textUI.text = title + ":" + text.Substring(text.Length - 200);
+        else textUI.text = title + ":" + text;
+        yield return null;
     }
 
     void Start()
@@ -112,25 +112,34 @@ public class Entity : MonoBehaviour
     IEnumerator Life()
     {
         while (mOpenAIManager.connected == false) yield return new WaitForSeconds(0.1f);
+        int thought_counter = 0;
         while (true)
         {
-            yield return new WaitForSeconds(1.0f / thoughtFrequency);
             StartCoroutine(UpdateUI("Thinking ..."));
             string current_thought = conscious ? ConsciousThink() : UnconsciousThink();
             mOpenAIManager.SendString(current_thought);
+            thought_counter++;
             Debug.Log("Entity " + title + " is thinking: " + current_thought);
-            while (mOpenAIManager.responseQueue.Count == 0) yield return new WaitForSeconds(1.0f);
-            string response = mOpenAIManager.responseQueue.Dequeue();
-            Debug.Log("Entity " + title + " has received a response: " + response);
-            StartCoroutine(UpdateUI("Acting ..."));
-            Act(response);
-            if (history.Length > memoryCapacity) ShortenHistory();
+            bool done = false;
+            while(!done)
+            {
+                while (mOpenAIManager.responseQueue.Count == 0) yield return new WaitForSeconds(0.1f);
+                string response = mOpenAIManager.responseQueue.Dequeue();
+                Debug.Log("Entity " + title + " has received a response: " + response);
+                StartCoroutine(UpdateUI("Acting ..."));
+                done = Act(response);
+            }
+            if (thought_counter % gatherThoughtsEveryNThoughts == 0)
+            {
+                StartCoroutine(UpdateUI("Gathering Thoughts ..."));
+                GatherThoughts();
+            }
         }
     }
 
-    private void ShortenHistory()
+    private void GatherThoughts()
     {
-        //TODO: faint some memories to keep the length of history below memoryCapacity
+        history = mOpenAIManager.GatherThoughts(history);
     }
 
     private string UnconsciousThink()
@@ -150,7 +159,11 @@ public class Entity : MonoBehaviour
         foreach (int key in keysToRemove) interactionQueue.Remove(key);
         string thought = history;
         thought += "I am perceiving " + interactionQueue.Count + " other entities around me. ";
-        if(interactionQueue.Count == 1)
+        if(interactionQueue.Count == 0)
+        {
+            thought += "I am alone. ";
+        }
+        else if(interactionQueue.Count == 1)
         {
             thought += "The other entity is ";
         }
@@ -176,13 +189,8 @@ public class Entity : MonoBehaviour
         return thought;
     }
 
-    public void Act(string response)
+    public bool Act(string response)
     {
-        if (response.Equals("OK"))
-        {
-            Debug.Log("Entity " + title + " has received an OK response");
-            return;
-        }
         string[] parts = response.Split("<->");
         switch(parts[0])
         {
@@ -207,7 +215,7 @@ public class Entity : MonoBehaviour
                     StartCoroutine(UpdateUI("[Moving] I am unable to move"));
                     mOpenAIManager.SendString("failed because the entity is unable to move.");
                 }
-                break;
+                return false;
             case "affect_self":
                 Dictionary<string, string> affect_self_dict = new Dictionary<string, string>
                 {
@@ -223,7 +231,7 @@ public class Entity : MonoBehaviour
                 movable = conscious ? affected_movable : movable;
                 StartCoroutine(UpdateUI("[Affecting][Self] " + added_history + " [Health] " + added_health + " [Movable] " + movable));
                 mOpenAIManager.SendString("success");
-                break;
+                return false;
             case "affect_other":
                 Dictionary<string, string> affect_other_dict = new Dictionary<string, string>
                 {
@@ -234,7 +242,7 @@ public class Entity : MonoBehaviour
                 string other_history = affect_other_dict["add_to_history"];
                 if (interactionQueue.ContainsKey(other_id))
                 {
-                    interactionQueue[other_id].history += other_history;
+                    interactionQueue[other_id].history += " " + other_history;
                     StartCoroutine(UpdateUI("[Affecting][" + interactionQueue[other_id].title + "] " + other_history));
                     mOpenAIManager.SendString("success");
                 }
@@ -242,17 +250,13 @@ public class Entity : MonoBehaviour
                 {
                     mOpenAIManager.SendString("failed because the entity is not there anymore.");
                 }
-                break;
-            case "response":
-                history += parts[1];
-                StartCoroutine(UpdateUI("[History Update] " + parts[1]));
-                break;
-            case "query":
+                return false;
+            case "query_self":
                 Dictionary<string, string> query_dict = new Dictionary<string, string>
                 {
                     { parts[1].Split(":")[0], parts[1].Split(":")[1] }
                 };
-                string query = query_dict["query"];
+                string query = query_dict["self_query"];
                 if(query.Equals("history"))
                 {
                     mOpenAIManager.SendString(history);
@@ -285,9 +289,14 @@ public class Entity : MonoBehaviour
                 {
                     mOpenAIManager.SendString("failed because the query is not recognized.");
                 }
-                break;
+                return false;
+            case "response":
+                // history += parts[1];
+                StartCoroutine(UpdateUI("[History Update] " + parts[1]));
+                return true;
             default:
-                break;
+                Debug.LogError("Entity " + title + " has received an unrecognized response: " + response);
+                return false;
         }
     }
 }
