@@ -4,47 +4,56 @@ using System.Linq.Expressions;
 using System.Net.Sockets;
 using UnityEngine;
 
-public class Thought
-{
-    public Entity entity;
-    public string thought;
+using System.Threading;
 
-    public Thought(Entity entity, string thought)
-    {
-        this.entity = entity;
-        this.thought = thought;
-    }
-}
 public class OpenAIManager : MonoBehaviour
 {
     public string HandlerIP = "127.0.0.1";
     public int HandlerPort = 9438;
     private Socket socket;
-    public static Queue<Thought> thoughtQueue = new Queue<Thought>();
+    public bool connected = false;
+
+    private Thread responseThread;
+    public Queue<string> responseQueue = new Queue<string>();
 
     void Start()
     {
         socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
         socket.Connect(HandlerIP, HandlerPort);
+        connected = true;
         Debug.Log("Connected to OpenAI Handler");
-    }
-
-    void Update()
-    {
-        if (thoughtQueue.Count > 0)
-        {
-            Thought thought = thoughtQueue.Dequeue();
-            //TODO: send thought to OpenAI and get response
-        }
+        SendString("CHECK");
+        responseThread = new Thread(QueueResponses);
+        responseThread.Start();
     }
 
     void OnDestory()
     {
+        if (responseThread != null && responseThread.IsAlive) responseThread.Abort();
         socket.Close();
     }
-    
-    public static void SubmitThought(Entity entity, string thought)
+
+    private void QueueResponses()
     {
-        thoughtQueue.Enqueue(new Thought(entity, thought));
+        while(true)
+        {
+            byte[] response_length = new byte[4];
+            socket.Receive(response_length);
+            int response_length_int = System.BitConverter.ToInt32(response_length, 0);
+            byte[] response = new byte[response_length_int];
+            socket.Receive(response);
+            while (response.Length < response_length_int) socket.Receive(response, response.Length, response_length_int - response.Length, SocketFlags.None);
+            string response_str = System.Text.Encoding.ASCII.GetString(response);
+            responseQueue.Enqueue(response_str);
+        }
+    }
+
+    public void SendString(string str)
+    {
+        byte[] buffer = System.Text.Encoding.ASCII.GetBytes(str);
+        int buffer_length = buffer.Length;
+        byte[] length = System.BitConverter.GetBytes(buffer_length);
+        socket.Send(length);
+        socket.Send(buffer);
     }
 }

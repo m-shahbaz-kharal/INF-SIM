@@ -29,9 +29,9 @@ public static class FileManager
             result = File.ReadAllText(fullPath);
             return true;
         }
-        catch (Exception e)
+        catch (Exception)
         {
-            Debug.LogError($"Failed to read from {fullPath} with exception {e}");
+            Debug.Log($"No History found at {fullPath}.");
             result = "";
             return false;
         }
